@@ -11,10 +11,23 @@ include_once("functions.php");
 set_error_handler("dyndns_error_handler");
 
 /* Opts */
-$pass = isset($_GET['pass']) ? $_GET['pass'] : null;
-$domain = isset($_GET['domain']) ? $_GET['domain'] : null;
-$ipaddr = isset($_GET['ipaddr']) ? $_GET['ipaddr'] : null;
-$ip6addr = isset($_GET['ip6addr']) ? $_GET['ip6addr'] : null;
+if (php_sapi_name() == "cli") {
+  // Command line
+  $shortopts = "";
+  $longopts = array("pass:", "domain:", "ipaddr:", "ip6addr:");
+  $options = getopt($shortopts, $longopts);
+  $pass = isset($options['pass']) ? $options['pass'] : null;
+  $domain = isset($options['domain']) ? $options['domain'] : null;
+  $ipaddr = isset($options['ipaddr']) ? $options['ipaddr'] : null;
+  $ip6addr = isset($options['ip6addr']) ? $options['ip6addr'] : null;
+} else {
+  // HTTP
+  $pass = isset($_GET['pass']) ? $_GET['pass'] : null;
+  $domain = isset($_GET['domain']) ? $_GET['domain'] : null;
+  $ipaddr = isset($_GET['ipaddr']) ? $_GET['ipaddr'] : null;
+  $ip6addr = isset($_GET['ip6addr']) ? $_GET['ip6addr'] : null;
+}
+
 
 /* Validation */
 if (!validCred($pass)) {
@@ -42,17 +55,31 @@ if (!validDomain($domain)) {
   respond("failed", "not a valid domain");
 }
 
+if (!configuredDomain($domain)) {
+  trigger_error("unsupported domain", E_USER_WARNING);
+  respond("failed", "unsupported domain");
+}
+
+// Multi-domain
+if (defined('DOMAINS')) {
+  $domains = unserialize(DOMAINS);
+  $subdomains = $domains[$domain];
+} else {
+  $subdomains = SUBDOMAIN;
+}
+
 /*
  * Request: Get all records of the domain
  */
 /* Build request */
 $xml_get = implode("", file(XML_GET_ZONE));
-$doc_get = DOMDocument::loadXML($xml_get);
+$doc_get = new DOMDocument();
+$doc_get->loadXML($xml_get);
 $doc_get->formatOutput = true;
 $doc_get->getElementsByTagName('user')->item(0)->nodeValue = USER;
 $doc_get->getElementsByTagName('password')->item(0)->nodeValue = PASSWORD;
 $doc_get->getElementsByTagName('context')->item(0)->nodeValue = CONTEXT;
-$doc_get->getElementsByTagName('name')->item(0)->nodeValue = DOMAIN;
+$doc_get->getElementsByTagName('name')->item(0)->nodeValue = $domain;
 $doc_get->getElementsByTagName('system_ns')->item(0)->nodeValue = SYSTEM_NS;
 // ATTENTION: This dom document contains credentials
 //trigger_error($doc_get->saveXML(), E_USER_NOTICE);
@@ -62,7 +89,8 @@ trigger_error("get current zone records", E_USER_NOTICE);
 $result = requestCurl($doc_get->saveXML());
 
 /* Receive */
-$doc_result = DOMDocument::loadXML($result);
+$doc_result = new DOMDocument();
+$doc_result->loadXML($result);
 $doc_result->formatOutput = true;
 trigger_error($doc_result->saveXML(), E_USER_NOTICE);
 
@@ -83,7 +111,8 @@ if ($entries->length > 0) {
  */
 /* Settings */
 $file_put = implode("", file(XML_PUT_ZONE));
-$doc_put = DOMDocument::loadXML($file_put);
+$doc_put = new DOMDocument();
+$doc_put->loadXML($file_put);
 $doc_put->formatOutput = true;
 $doc_put->getElementsByTagName('user')->item(0)->nodeValue = USER;
 $doc_put->getElementsByTagName('password')->item(0)->nodeValue = PASSWORD;
@@ -99,30 +128,30 @@ $frag_data->removeChild($frag_data->getElementsByTagName('updated_by')->item(0))
 $frag = $doc_put->importNode($frag_data, TRUE);
 $doc_put->getElementsByTagName('task')->item(0)->appendChild($frag);
 
-/* New dynamic DNS IP */
-if (isset($ipaddr)) {
-  $xpath = new DOMXPath($doc_put);
-  $query = "//task/zone/rr[name='" . SUBDOMAIN . "' and type='A']/value";
-  $entries = $xpath->query($query);
-  if ($entries->length != 1) {
-    trigger_error("domain has no dyndns A-record for " . SUBDOMAIN, E_USER_ERROR);
-    respond("failed", "domain has no dyndns A-record for " . SUBDOMAIN);
-
+/* New dynamic DNS IP address for each subdomain */
+foreach($subdomains as $subdomain) {
+  if (isset($ipaddr)) {
+    $xpath = new DOMXPath($doc_put);
+    $query = "//task/zone/rr[name='" . $subdomain . "' and type='A']/value";
+    $entries = $xpath->query($query);
+    if ($entries->length != 1) {
+      trigger_error("domain has no dyndns A-record for " . $subdomain, E_USER_ERROR);
+      respond("failed", "domain has no dyndns A-record for " . $subdomain);
+    }
+    $entries->item(0)->nodeValue = $ipaddr;
   }
-  $entries->item(0)->nodeValue = $ipaddr;
-}
 
-/* New dynamic DNS IPv6 */
-if (isset($ip6addr)) {
-  $xpath = new DOMXPath($doc_put);
-  $query = "//task/zone/rr[name='" . SUBDOMAIN . "' and type='AAAA']/value";
-  $entries = $xpath->query($query);
-  if ($entries->length != 1) {
-    trigger_error("domain has no dyndns AAAA-record for " . SUBDOMAIN, E_USER_ERROR);
-    respond("failed", "domain has no dyndns AAAA-record for " . SUBDOMAIN);
-
+  /* New dynamic DNS IPv6 */
+  if (isset($ip6addr)) {
+    $xpath = new DOMXPath($doc_put);
+    $query = "//task/zone/rr[name='" . $subdomain . "' and type='AAAA']/value";
+    $entries = $xpath->query($query);
+    if ($entries->length != 1) {
+      trigger_error("domain has no dyndns AAAA-record for " . $subdomain, E_USER_ERROR);
+      respond("failed", "domain has no dyndns AAAA-record for " . $subdomain);
+    }
+    $entries->item(0)->nodeValue = $ip6addr;
   }
-  $entries->item(0)->nodeValue = $ip6addr;
 }
 
 /* Send */
@@ -133,7 +162,8 @@ trigger_error("set new zone records", E_USER_NOTICE);
 $result = requestCurl($xml_put);
 
 /* Receive */
-$doc_result = DOMDocument::loadXML($result);
+$doc_result = new DOMDocument();
+$doc_result->loadXML($result);
 $doc_result->formatOutput = true;
 trigger_error($doc_result->saveXML(), E_USER_NOTICE);
 
